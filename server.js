@@ -34,7 +34,6 @@ const swaggerOptions = {
             version: '1.0.0',
             description: 'Parth Shah Design Studio',
         },
-        servers: [{ url: 'http://localhost:3000' }],
         components: {
             securitySchemes: {
                 BearerAuth: {
@@ -114,7 +113,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
  * @swagger
  * /api/login:
  *   post:
- *     summary: Logs in and generates a JWT token
+ *     summary: Logs in and generates a token
  *     requestBody:
  *       required: true
  *       content:
@@ -185,20 +184,52 @@ app.post('/api/about', authenticateToken, upload.single('image'), (req, res) => 
  * @swagger
  * /api/about:
  *   get:
- *     summary: Get About Us info
+ *     summary: Get About Us entries with optional filters
+ *     parameters:
+ *       - in: query
+ *         name: id
+ *         schema:
+ *           type: integer
+ *         description: ID of the about entry
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *         description: Limit number of results
  *     responses:
  *       200:
- *         description: Content retrieved
+ *         description: About Us content retrieved
  */
 app.get('/api/about', (req, res) => {
-    db.execute('SELECT * FROM about_us LIMIT 1', (err, results) => {
+    const { id, limit } = req.query;
+    let sql = `SELECT * FROM about_us WHERE 1=1`;
+    const params = [];
+
+    if (id) {
+        sql += ` AND id = ?`;
+        params.push(id);
+    }
+
+    sql += ` ORDER BY id DESC`;
+
+    if (limit) {
+        sql += ` LIMIT ?`;
+        params.push(parseInt(limit));
+    }
+
+    db.execute(sql, params, (err, results) => {
         if (err) return res.status(500).json({ message: 'DB error' });
         if (results.length === 0) return res.status(404).json({ message: 'No content' });
-        const item = results[0];
-        item.image_url = `${req.protocol}://${req.get('host')}/uploads/${item.image}`;
-        res.json(item);
+
+        const formatted = results.map(item => ({
+            ...item,
+            image_url: item.image ? `${req.protocol}://${req.get('host')}/uploads/${item.image}` : null
+        }));
+
+        res.json(id || limit ? formatted : formatted[0]); // if single item requested, return as object
     });
 });
+
 
 /**
  * @swagger
@@ -287,104 +318,188 @@ function authenticateToken(req, res, next) {
 
 /**
  * @swagger
+ * components:
+ *   schemas:
+ *     Work:
+ *       type: object
+ *       properties:
+ *         title:
+ *           type: string
+ *         description:
+ *           type: string
+ *         image:
+ *           type: string
+ *           format: binary
+ *         category_id:
+ *           type: integer
+ */
+
+/**
+ * @swagger
  * /api/work:
  *   post:
- *     summary: Create a new work entry
+ *     summary: Create new work item
  *     security:
  *       - BearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
- *         application/json:
+ *         multipart/form-data:
  *           schema:
  *             $ref: '#/components/schemas/Work'
  *     responses:
  *       201:
- *         description: Work entry created
+ *         description: Work created
  */
-app.post('/api/work', authenticateToken, (req, res) => {
+app.post('/api/work', authenticateToken, upload.single('image'), (req, res) => {
     const { title, description, category_id } = req.body;
+    const image = req.file ? req.file.filename : null;
 
-    db.execute('INSERT INTO work (title, description, category_id) VALUES (?, ?, ?)', [title, description, category_id], (err) => {
-        if (err) return res.status(500).json({ message: 'DB error' });
-        res.status(201).json({ message: 'Work entry created' });
-    });
+    db.execute(
+        'INSERT INTO work (title, description, image, category_id) VALUES (?, ?, ?, ?)',
+        [title, description, image, category_id],
+        (err) => {
+            if (err) return res.status(500).json({ message: 'DB error' });
+            res.status(201).json({ message: 'Work created' });
+        }
+    );
 });
 
 /**
  * @swagger
  * /api/work:
  *   get:
- *     summary: Get all work entries
+ *     summary: Get work items with optional filters
+ *     parameters:
+ *       - in: query
+ *         name: id
+ *         schema:
+ *           type: integer
+ *         description: ID of the work item
+ *       - in: query
+ *         name: category_id
+ *         schema:
+ *           type: integer
+ *         description: Filter by category ID
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *         description: Limit number of results
  *     responses:
  *       200:
- *         description: List of work entries
+ *         description: List of work items
  */
 app.get('/api/work', (req, res) => {
-    db.execute('SELECT * FROM work', (err, results) => {
+    const { id, limit, category_id } = req.query;
+    let sql = `
+        SELECT w.*, 
+        CONCAT('${req.protocol}://${req.get('host')}/uploads/', w.image) AS image_url, 
+        c.name AS category 
+        FROM work w 
+        LEFT JOIN categories c ON w.category_id = c.id 
+        WHERE 1=1`;
+    const params = [];
+
+    if (id) {
+        sql += ' AND w.id = ?';
+        params.push(id);
+    }
+
+    if (category_id) {
+        sql += ' AND w.category_id = ?';
+        params.push(category_id);
+    }
+
+    sql += ' ORDER BY w.id DESC';
+
+    if (limit) {
+        sql += ' LIMIT ?';
+        params.push(parseInt(limit));
+    }
+
+    db.execute(sql, params, (err, results) => {
         if (err) return res.status(500).json({ message: 'DB error' });
         res.json(results);
     });
 });
 
+
 /**
  * @swagger
  * /api/work/{id}:
  *   put:
- *     summary: Update a work entry
+ *     summary: Update work item
  *     security:
  *       - BearerAuth: []
  *     parameters:
- *       - in: path
- *         name: id
+ *       - name: id
+ *         in: path
  *         required: true
  *         schema:
  *           type: integer
  *     requestBody:
- *       required: true
+ *       required: false
  *       content:
- *         application/json:
+ *         multipart/form-data:
  *           schema:
  *             $ref: '#/components/schemas/Work'
  *     responses:
  *       200:
- *         description: Work entry updated
+ *         description: Work updated
  */
-app.put('/api/work/:id', authenticateToken, (req, res) => {
+app.put('/api/work/:id', authenticateToken, upload.single('image'), (req, res) => {
     const { id } = req.params;
     const { title, description, category_id } = req.body;
+    const image = req.file ? req.file.filename : null;
 
-    db.execute('UPDATE work SET title = ?, description = ?, category_id = ? WHERE id = ?', [title, description, category_id, id], (err) => {
-        if (err) return res.status(500).json({ message: 'DB error' });
-        res.json({ message: 'Work entry updated' });
-    });
+    if (image) {
+        db.execute('SELECT image FROM work WHERE id = ?', [id], (err, result) => {
+            if (!err && result[0]?.image) fs.unlink(`uploads/${result[0].image}`, () => { });
+        });
+    }
+
+    db.execute(
+        'UPDATE work SET title = ?, description = ?, image = COALESCE(?, image), category_id = ? WHERE id = ?',
+        [title, description, image, category_id, id],
+        (err) => {
+            if (err) return res.status(500).json({ message: 'DB error' });
+            res.json({ message: 'Work updated' });
+        }
+    );
 });
 
 /**
  * @swagger
  * /api/work/{id}:
  *   delete:
- *     summary: Delete a work entry
+ *     summary: Delete work item
  *     security:
  *       - BearerAuth: []
  *     parameters:
- *       - in: path
- *         name: id
+ *       - name: id
+ *         in: path
  *         required: true
  *         schema:
  *           type: integer
  *     responses:
  *       200:
- *         description: Work entry deleted
+ *         description: Work deleted
  */
 app.delete('/api/work/:id', authenticateToken, (req, res) => {
     const { id } = req.params;
 
-    db.execute('DELETE FROM work WHERE id = ?', [id], (err) => {
-        if (err) return res.status(500).json({ message: 'DB error' });
-        res.json({ message: 'Work entry deleted' });
+    db.execute('SELECT image FROM work WHERE id = ?', [id], (err, result) => {
+        if (err || result.length === 0) return res.status(404).json({ message: 'Not found' });
+
+        if (result[0].image) fs.unlink(`uploads/${result[0].image}`, () => { });
+        db.execute('DELETE FROM work WHERE id = ?', [id], (err) => {
+            if (err) return res.status(500).json({ message: 'DB error' });
+            res.json({ message: 'Work deleted' });
+        });
     });
 });
+
 
 /**
  * @swagger
